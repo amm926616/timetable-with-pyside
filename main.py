@@ -1,12 +1,15 @@
-import sys
-import sqlite3
 import datetime
+import json
+import os
+import sqlite3
+import sys
+
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
     QPushButton, QHeaderView, QDialog, QLineEdit, QFormLayout,
-    QTabWidget, QMessageBox, QTextEdit, QDialogButtonBox
+    QTabWidget, QMessageBox, QTextEdit
 )
-from PySide6.QtCore import Qt
 
 DB_PATH = "timetable.db"
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
@@ -28,9 +31,8 @@ class AddClassDialog(QDialog):
         self.layout.addRow("Grade:", self.grade_input)
         self.layout.addRow("Time:", self.time_input)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons = QPushButton("OK")
+        buttons.clicked.connect(self.accept)
         self.layout.addWidget(buttons)
 
     def get_data(self):
@@ -63,33 +65,28 @@ class TimetableApp(QWidget):
         self.setWindowTitle("My Class Timetable")
         self.resize(1000, 600)
         self.layout = QVBoxLayout(self)
-        
         self.tabs = QTabWidget()
         self.layout.addWidget(self.tabs)
 
         self.tables = {}
-        self.add_buttons = {}
 
         for day in WEEKDAYS:
             tab = QWidget()
             tab_layout = QVBoxLayout(tab)
-
             table = QTableWidget()
             tab_layout.addWidget(table)
 
             add_btn = QPushButton(f"Add New Class ({day})")
+            add_btn.clicked.connect(lambda checked, d=day: self.add_class_dialog(d))
             tab_layout.addWidget(add_btn)
 
-            add_btn.clicked.connect(lambda checked, d=day: self.add_class_dialog(d))
-
             self.tables[day] = table
-            self.add_buttons[day] = add_btn
-
             self.tabs.addTab(tab, day)
             table.cellClicked.connect(lambda r, c, d=day: self.handle_toggle(r, c, d))
 
         self.init_db()
         self.alter_table_add_columns()
+        self.backup_if_monday()
 
         today = datetime.datetime.today().strftime('%A')
         self.tabs.setCurrentIndex(WEEKDAYS.index(today) if today in WEEKDAYS else 0)
@@ -112,16 +109,73 @@ class TimetableApp(QWidget):
             )
             """)
 
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS class_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_class_id INTEGER,
+                name TEXT,
+                duration TEXT,
+                grade TEXT,
+                time TEXT,
+                lesson_prepared BOOLEAN,
+                done BOOLEAN,
+                classroom_created BOOLEAN,
+                notes TEXT,
+                day TEXT,
+                backup_date TEXT DEFAULT (date('now'))
+            )
+            """)
+
     def alter_table_add_columns(self):
         with sqlite3.connect(DB_PATH) as conn:
-            try:
-                conn.execute("ALTER TABLE classes ADD COLUMN grade TEXT DEFAULT ''")
-            except sqlite3.OperationalError:
-                pass
-            try:
-                conn.execute("ALTER TABLE classes ADD COLUMN time TEXT DEFAULT ''")
-            except sqlite3.OperationalError:
-                pass
+            try: conn.execute("ALTER TABLE classes ADD COLUMN grade TEXT DEFAULT ''")
+            except sqlite3.OperationalError: pass
+            try: conn.execute("ALTER TABLE classes ADD COLUMN time TEXT DEFAULT ''")
+            except sqlite3.OperationalError: pass
+
+    def backup_if_monday(self):
+        today = datetime.datetime.today()
+        today_str = today.strftime('%Y-%m-%d')
+        is_monday = today.strftime('%A') == "Monday"
+        prev_file = "previous_monday.json"
+
+        # Load last backup date
+        if os.path.exists(prev_file):
+            with open(prev_file, "r") as f:
+                data = json.load(f)
+                last_backup = data.get("last_backup", "")
+        else:
+            last_backup = ""
+
+        if not is_monday or last_backup == today_str:
+            return  # Not Monday or already backed up today
+
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = conn.execute("""
+                                SELECT id,
+                                       name,
+                                       duration,
+                                       grade, time, lesson_prepared, done, classroom_created, notes, day
+                                FROM classes
+                                """).fetchall()
+
+            for row in rows:
+                conn.execute("""
+                             INSERT INTO class_history (original_class_id, name, duration, grade, time,
+                                                        lesson_prepared, done, classroom_created, notes, day)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             """, row)
+
+            conn.execute("""
+                         UPDATE classes
+                         SET lesson_prepared   = 0,
+                             done              = 0,
+                             classroom_created = 0,
+                             notes             = ''
+                         """)
+
+        with open(prev_file, "w") as f:
+            json.dump({"last_backup": today_str}, f)
 
     def load_all_days(self):
         for day in WEEKDAYS:
@@ -224,4 +278,3 @@ if __name__ == "__main__":
     window = TimetableApp()
     window.show()
     sys.exit(app.exec())
-
