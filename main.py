@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import datetime
 import json
 import os
@@ -11,7 +13,8 @@ from PySide6.QtWidgets import (
     QTabWidget, QMessageBox, QTextEdit
 )
 
-DB_PATH = "timetable.db"
+script_path = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(script_path, "timetable.db")
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 
 class AddClassDialog(QDialog):
@@ -137,7 +140,7 @@ class TimetableApp(QWidget):
         today = datetime.datetime.today()
         today_str = today.strftime('%Y-%m-%d')
         is_monday = today.strftime('%A') == "Monday"
-        prev_file = "previous_monday.json"
+        prev_file = os.path.join(script_path, "previous_monday.json")
 
         # Load last backup date
         if os.path.exists(prev_file):
