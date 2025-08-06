@@ -13,7 +13,10 @@ from PySide6.QtWidgets import (
     QTabWidget, QMessageBox, QTextEdit
 )
 
+from PySide6.QtGui import QIcon
+
 script_path = os.path.dirname(os.path.abspath(__file__))
+icon_path = os.path.join(script_path, "edusn_logo")
 DB_PATH = os.path.join(script_path, "timetable.db")
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 
@@ -278,6 +281,7 @@ class TimetableApp(QWidget):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(icon_path))
     window = TimetableApp()
     window.show()
     sys.exit(app.exec())
