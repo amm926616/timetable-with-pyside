@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
     QPushButton, QHeaderView, QDialog, QLineEdit, QFormLayout,
-    QTabWidget, QMessageBox, QTextEdit
+    QTabWidget, QMessageBox, QTextEdit, QHBoxLayout
 )
 
 from PySide6.QtGui import QIcon
@@ -50,20 +50,37 @@ class AddClassDialog(QDialog):
             self.day
         )
 
-class NotesTextEdit(QTextEdit):
-    def __init__(self, class_id, day, initial_text, update_callback):
-        super().__init__()
+class LessonPlanDialog(QDialog):
+    def __init__(self, class_id, day, initial_text, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Lesson Plan for {day}")
+        self.resize(500, 400)
         self.class_id = class_id
         self.day = day
-        self.update_callback = update_callback
-        self.setText(initial_text)
+        self.layout = QVBoxLayout(self)
 
-    def focusOutEvent(self, event):
-        new_note = self.toPlainText()
+        self.text_editor = QTextEdit(self)
+        self.text_editor.setText(initial_text)
+        self.layout.addWidget(self.text_editor)
+
+        save_button = QPushButton("Save Plan")
+        save_button.clicked.connect(self.save_plan)
+        self.layout.addWidget(save_button)
+
+    def save_plan(self):
+        plan_text = self.text_editor.toPlainText()
         with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("UPDATE classes SET notes = ? WHERE id = ?", (new_note, self.class_id))
-        self.update_callback(self.day)
-        super().focusOutEvent(event)
+            cursor = conn.cursor()
+            cursor.execute("SELECT plan_text FROM lesson_plans WHERE class_id = ? AND day = ?", (self.class_id, self.day))
+            existing_plan = cursor.fetchone()
+
+            if existing_plan:
+                conn.execute("UPDATE lesson_plans SET plan_text = ? WHERE class_id = ? AND day = ?",
+                             (plan_text, self.class_id, self.day))
+            else:
+                conn.execute("INSERT INTO lesson_plans (class_id, day, plan_text) VALUES (?, ?, ?)",
+                             (self.class_id, self.day, plan_text))
+        self.accept()
 
 class TimetableApp(QWidget):
     def __init__(self):
@@ -109,7 +126,6 @@ class TimetableApp(QWidget):
                 duration TEXT NOT NULL,
                 lesson_prepared BOOLEAN NOT NULL DEFAULT 0,
                 done BOOLEAN NOT NULL DEFAULT 0,
-                notes TEXT DEFAULT '',
                 classroom_created BOOLEAN NOT NULL DEFAULT 0,
                 day TEXT NOT NULL DEFAULT 'Monday'
             )
@@ -126,9 +142,18 @@ class TimetableApp(QWidget):
                 lesson_prepared BOOLEAN,
                 done BOOLEAN,
                 classroom_created BOOLEAN,
-                notes TEXT,
                 day TEXT,
                 backup_date TEXT DEFAULT (date('now'))
+            )
+            """)
+
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS lesson_plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                class_id INTEGER,
+                day TEXT,
+                plan_text TEXT,
+                FOREIGN KEY(class_id) REFERENCES classes(id)
             )
             """)
 
@@ -145,7 +170,6 @@ class TimetableApp(QWidget):
         is_monday = today.strftime('%A') == "Monday"
         prev_file = os.path.join(script_path, "previous_monday.json")
 
-        # Load last backup date
         if os.path.exists(prev_file):
             with open(prev_file, "r") as f:
                 data = json.load(f)
@@ -154,31 +178,27 @@ class TimetableApp(QWidget):
             last_backup = ""
 
         if not is_monday or last_backup == today_str:
-            return  # Not Monday or already backed up today
+            return
 
         with sqlite3.connect(DB_PATH) as conn:
             rows = conn.execute("""
-                                SELECT id,
-                                       name,
-                                       duration,
-                                       grade, time, lesson_prepared, done, classroom_created, notes, day
-                                FROM classes
-                                """).fetchall()
+                SELECT id, name, duration, grade, time, lesson_prepared, done, classroom_created, day
+                FROM classes
+            """).fetchall()
 
             for row in rows:
                 conn.execute("""
-                             INSERT INTO class_history (original_class_id, name, duration, grade, time,
-                                                        lesson_prepared, done, classroom_created, notes, day)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                             """, row)
+                INSERT INTO class_history (original_class_id, name, duration, grade, time,
+                                         lesson_prepared, done, classroom_created, day)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, row)
 
             conn.execute("""
-                         UPDATE classes
-                         SET lesson_prepared   = 0,
-                             done              = 0,
-                             classroom_created = 0,
-                             notes             = ''
-                         """)
+            UPDATE classes
+            SET lesson_prepared = 0,
+                done = 0,
+                classroom_created = 0
+            """)
 
         with open(prev_file, "w") as f:
             json.dump({"last_backup": today_str}, f)
@@ -197,20 +217,22 @@ class TimetableApp(QWidget):
 
         with sqlite3.connect(DB_PATH) as conn:
             rows = conn.execute("""
-                SELECT id, name, duration, lesson_prepared, done, notes,
-                       classroom_created, grade, time
-                FROM classes WHERE day=?
+                SELECT c.id, c.name, c.duration, c.grade, c.time, c.lesson_prepared, c.done,
+                       c.classroom_created, lp.plan_text
+                FROM classes c
+                LEFT JOIN lesson_plans lp ON c.id = lp.class_id AND c.day = lp.day
+                WHERE c.day=?
             """, (day,)).fetchall()
 
-        table.setColumnCount(9)
+        table.setColumnCount(8)
         table.setHorizontalHeaderLabels([
             "Class Name", "Duration", "Grade", "Time",
             "Prepared", "Done", "Classroom Created",
-            "Notes", "Delete"
+            "Lesson Plan", "Delete"
         ])
         table.setRowCount(len(rows))
 
-        for row_idx, (id_, name, duration, prepared, done, notes, created, grade, time_str) in enumerate(rows):
+        for row_idx, (id_, name, duration, grade, time_str, prepared, done, created, plan_text) in enumerate(rows):
             table.setItem(row_idx, 0, QTableWidgetItem(name))
             table.setItem(row_idx, 1, QTableWidgetItem(duration))
             table.setItem(row_idx, 2, QTableWidgetItem(grade))
@@ -231,14 +253,17 @@ class TimetableApp(QWidget):
             created_item.setData(Qt.UserRole, (id_, "classroom_created"))
             table.setItem(row_idx, 6, created_item)
 
-            note_editor = NotesTextEdit(id_, day, notes, self.load_data)
-            table.setCellWidget(row_idx, 7, note_editor)
+            lesson_plan_btn = QPushButton("📝 Edit Plan")
+            lesson_plan_btn.clicked.connect(lambda _, i=id_, d=day, pt=plan_text: self.edit_lesson_plan(i, d, pt))
+            table.setCellWidget(row_idx, 7, lesson_plan_btn)
 
             delete_button = QPushButton("🗑")
             delete_button.clicked.connect(lambda _, i=id_, d=day: self.delete_class(i, d))
             table.setCellWidget(row_idx, 8, delete_button)
 
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        table.horizontalHeader().setSectionResizeMode(7, QHeaderView.Stretch)
         table.blockSignals(False)
 
     def handle_toggle(self, row, column, day):
@@ -259,11 +284,17 @@ class TimetableApp(QWidget):
 
         self.load_data(day)
 
+    def edit_lesson_plan(self, class_id, day, initial_text):
+        dialog = LessonPlanDialog(class_id, day, initial_text, self)
+        if dialog.exec() == QDialog.Accepted:
+            self.load_data(day)
+
     def delete_class(self, class_id, day):
         confirm = QMessageBox.question(self, "Confirm Delete", "Delete this class?", QMessageBox.Yes | QMessageBox.No)
         if confirm == QMessageBox.Yes:
             with sqlite3.connect(DB_PATH) as conn:
                 conn.execute("DELETE FROM classes WHERE id = ?", (class_id,))
+                conn.execute("DELETE FROM lesson_plans WHERE class_id = ?", (class_id,))
             self.load_data(day)
 
     def add_class_dialog(self, day):
@@ -273,9 +304,9 @@ class TimetableApp(QWidget):
             if name.strip() and duration.strip():
                 with sqlite3.connect(DB_PATH) as conn:
                     conn.execute("""
-                        INSERT INTO classes (name, duration, lesson_prepared, done, notes,
-                                             classroom_created, day, grade, time)
-                        VALUES (?, ?, 0, 0, '', 0, ?, ?, ?)
+                    INSERT INTO classes (name, duration, lesson_prepared, done,
+                                         classroom_created, day, grade, time)
+                    VALUES (?, ?, 0, 0, 0, ?, ?, ?)
                     """, (name.strip(), duration.strip(), day, grade.strip(), time_str.strip()))
                 self.load_data(day)
 
